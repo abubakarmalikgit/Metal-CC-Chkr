@@ -37,7 +37,7 @@ check_queue = asyncio.Queue(maxsize=2000)
 session = None
 
 # ==========================================
-# HELPER FUNCTIONS & API
+# HELPER FUNCTIONS & SMART API
 # ==========================================
 def format_card_number(cc):
     cc = ''.join(filter(str.isdigit, cc))
@@ -45,16 +45,33 @@ def format_card_number(cc):
 
 async def check_card_api(card_data: str):
     global session
-    try:
-        payload = {"data": card_data}
-        async with session.post("https://api.chkr.cc/", json=payload, timeout=10) as response:
-            if response.status == 429:
-                await asyncio.sleep(2) 
-                async with session.post("https://api.chkr.cc/", json=payload, timeout=10) as retry_resp:
-                    return await retry_resp.json()
-            return await response.json()
-    except Exception:
-        return {"error": "API Timeout"}
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            payload = {"data": card_data}
+            async with session.post("https://api.chkr.cc/", json=payload, timeout=15) as response:
+                
+                # --- SMART RATE LIMIT HANDLER ---
+                if response.status == 429:
+                    wait_time = 5 * (attempt + 1) # Waits 5s, then 10s, then 15s
+                    print(f"⚠️ API Rate Limit (429). Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                
+                # If API returns a different error (like 500 or 403)
+                if response.status != 200:
+                    text = await response.text()
+                    return {"error": f"API Status {response.status}: {text[:50]}"}
+
+                return await response.json()
+                
+        except Exception as e:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3)
+            else:
+                return {"error": f"Connection Error: {str(e)[:40]}"}
+                
+    return {"error": "API Rate Limit Exceeded. Try again in a few minutes."}
 
 def create_premium_embed(card_data: str, result: dict):
     parts = card_data.split('|')
@@ -98,7 +115,7 @@ def create_premium_embed(card_data: str, result: dict):
     return embed, is_live
 
 # ==========================================
-# BACKGROUND WORKER (UPDATED FOR DISCORD RATE LIMITS)
+# BACKGROUND WORKER
 # ==========================================
 async def queue_worker():
     await bot.wait_until_ready()
@@ -116,22 +133,15 @@ async def queue_worker():
                 ch = bot.get_channel(channel_config["logs"])
                 if ch: target_channel = ch
 
-            # --- SEND MESSAGE WITH RATE LIMIT PROTECTION ---
             try:
                 await target_channel.send(embed=embed)
             except discord.HTTPException as e:
                 if e.status == 429:
-                    # Discord said "Too Many Requests". Wait the exact time Discord asks for.
                     wait_time = getattr(e, 'retry_after', 5.0)
                     print(f"⚠️ Discord Rate Limit hit. Pausing for {wait_time} seconds...")
                     await asyncio.sleep(wait_time)
-                    # Retry sending the message after waiting
                     await target_channel.send(embed=embed)
-                else:
-                    print(f"Discord Send Error: {e}")
 
-            # --- SAFE DELAY ---
-            # 1.5 seconds is the perfect sweet spot to stay under Discord's 5-msg/5-sec limit
             await asyncio.sleep(1.5) 
             
         except asyncio.CancelledError:
