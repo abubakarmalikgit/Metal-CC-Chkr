@@ -4,27 +4,51 @@ from discord import app_commands
 from discord.ui import Modal, TextInput
 import aiohttp
 import asyncio
+from flask import Flask
+from threading import Thread
 
-# --- Bot Setup ---
+# ==========================================
+# RENDER FREE TIER HACK: KEEP ALIVE
+# ==========================================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive and running!"
+
+def run_webserver():
+    # Render assigns a PORT env variable, defaults to 8080
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    server_thread = Thread(target=run_webserver)
+    server_thread.daemon = True
+    server_thread.start()
+
+# ==========================================
+# BOT SETUP & ZERO-STORAGE CONFIG
+# ==========================================
 intents = discord.Intents.default()
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
-# --- ZERO STORAGE: In-Memory Config (No files written to disk) ---
+# In-memory config (No files written to disk = saves RAM & I/O)
 channel_config = {"main": None, "logs": None}
 
-# --- Bounded Queue: Prevents Out-Of-Memory (OOM) crashes on 512MB RAM ---
+# Bounded Queue (Prevents Out-Of-Memory crashes on 512MB RAM)
 check_queue = asyncio.Queue(maxsize=2000)
 
-# --- SINGLE HTTP SESSION: Massive RAM saver ---
+# Single global HTTP session (Massive RAM saver)
 session = None
 
-# --- Lightweight Card Formatter (No Regex) ---
+# ==========================================
+# HELPER FUNCTIONS & API
+# ==========================================
 def format_card_number(cc):
     cc = ''.join(filter(str.isdigit, cc))
     return ' '.join(cc[i:i+4] for i in range(0, len(cc), 4))
 
-# --- Optimized API Request (Uses the single global session) ---
 async def check_card_api(card_data: str):
     global session
     try:
@@ -38,7 +62,6 @@ async def check_card_api(card_data: str):
     except Exception:
         return {"error": "API Timeout"}
 
-# --- Premium Embed GUI ---
 def create_premium_embed(card_data: str, result: dict):
     parts = card_data.split('|')
     cc = parts[0] if len(parts) > 0 else "N/A"
@@ -72,7 +95,7 @@ def create_premium_embed(card_data: str, result: dict):
     embed.add_field(name="📅 Expiry", value=f"```{mm}/{yy}```", inline=True)
     embed.add_field(name="🔒 CVV", value=f"```{cvv}```", inline=True)
     
-    embed.add_field(name="\u200b", value="\u200b", inline=False)
+    embed.add_field(name="\u200b", value="\u200b", inline=False) # Spacer
     embed.add_field(name="🏦 Bank", value=f"`{bank}`", inline=True)
     embed.add_field(name="🌍 Country", value=f"{country_emoji} `{country_name}`", inline=True)
     embed.add_field(name="📂 Type", value=f"`{card_type} ({category})`", inline=True)
@@ -80,7 +103,9 @@ def create_premium_embed(card_data: str, result: dict):
     embed.set_footer(text="Ultra-Lightweight Checker")
     return embed, is_live
 
-# --- Optimized Background Worker ---
+# ==========================================
+# BACKGROUND WORKER
+# ==========================================
 async def queue_worker():
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -108,7 +133,6 @@ async def queue_worker():
 # ==========================================
 # SLASH COMMANDS
 # ==========================================
-
 class CardCheckModal(Modal, title="💎 Premium Single Check"):
     card_data = TextInput(label="Card Data (CC|MM|YYYY|CVV)", placeholder="4242424242424242|12|2025|123", required=True, max_length=50)
 
@@ -134,7 +158,6 @@ async def check_file(interaction: discord.Interaction, file: discord.Attachment)
     
     if not lines: return await interaction.followup.send("❌ File is empty.")
     
-    # Cap at 500 to protect the 512MB RAM limit
     capped = len(lines) > 500
     if capped: lines = lines[:500]
 
@@ -167,23 +190,21 @@ async def check_list(interaction: discord.Interaction, cards: str):
 @tree.command(name="setmain", description="Set the channel where LIVE cards will be dropped")
 @app_commands.describe(channel="The channel for LIVE/HIT cards")
 async def set_main(interaction: discord.Interaction, channel: discord.TextChannel):
-    channel_config["main"] = channel.id # Stored in RAM only
+    channel_config["main"] = channel.id 
     await interaction.response.send_message(f"✅ **Main Channel** set to {channel.mention}.", ephemeral=True)
 
 @tree.command(name="setlogs", description="Set the channel where DEAD/UNKNOWN cards will be dropped")
 @app_commands.describe(channel="The channel for DEAD/UNKNOWN cards")
 async def set_logs(interaction: discord.Interaction, channel: discord.TextChannel):
-    channel_config["logs"] = channel.id # Stored in RAM only
+    channel_config["logs"] = channel.id 
     await interaction.response.send_message(f"✅ **Logs Channel** set to {channel.mention}.", ephemeral=True)
 
 # ==========================================
 # BOT EVENTS
 # ==========================================
-
 @bot.event
 async def on_ready():
     global session
-    # Initialize the single HTTP session to save RAM
     if session is None or session.closed:
         session = aiohttp.ClientSession()
         
@@ -201,7 +222,12 @@ async def on_close():
     if session and not session.closed:
         await session.close()
 
+# ==========================================
+# RUN BOT
+# ==========================================
 if __name__ == "__main__":
+    keep_alive() # Starts the invisible web server for Render Free Tier
+    
     TOKEN = os.getenv("DISCORD_BOT_TOKEN")
     if not TOKEN:
         print("❌ ERROR: DISCORD_BOT_TOKEN not set!")
