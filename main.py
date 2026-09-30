@@ -17,7 +17,6 @@ def home():
     return "Bot is alive and running!"
 
 def run_webserver():
-    # Render assigns a PORT env variable, defaults to 8080
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -33,13 +32,8 @@ intents = discord.Intents.default()
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
-# In-memory config (No files written to disk = saves RAM & I/O)
 channel_config = {"main": None, "logs": None}
-
-# Bounded Queue (Prevents Out-Of-Memory crashes on 512MB RAM)
 check_queue = asyncio.Queue(maxsize=2000)
-
-# Single global HTTP session (Massive RAM saver)
 session = None
 
 # ==========================================
@@ -55,7 +49,7 @@ async def check_card_api(card_data: str):
         payload = {"data": card_data}
         async with session.post("https://api.chkr.cc/", json=payload, timeout=10) as response:
             if response.status == 429:
-                await asyncio.sleep(2) # Rate limited, wait and retry once
+                await asyncio.sleep(2) 
                 async with session.post("https://api.chkr.cc/", json=payload, timeout=10) as retry_resp:
                     return await retry_resp.json()
             return await response.json()
@@ -95,7 +89,7 @@ def create_premium_embed(card_data: str, result: dict):
     embed.add_field(name="📅 Expiry", value=f"```{mm}/{yy}```", inline=True)
     embed.add_field(name="🔒 CVV", value=f"```{cvv}```", inline=True)
     
-    embed.add_field(name="\u200b", value="\u200b", inline=False) # Spacer
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
     embed.add_field(name="🏦 Bank", value=f"`{bank}`", inline=True)
     embed.add_field(name="🌍 Country", value=f"{country_emoji} `{country_name}`", inline=True)
     embed.add_field(name="📂 Type", value=f"`{card_type} ({category})`", inline=True)
@@ -104,7 +98,7 @@ def create_premium_embed(card_data: str, result: dict):
     return embed, is_live
 
 # ==========================================
-# BACKGROUND WORKER
+# BACKGROUND WORKER (UPDATED FOR DISCORD RATE LIMITS)
 # ==========================================
 async def queue_worker():
     await bot.wait_until_ready()
@@ -122,13 +116,29 @@ async def queue_worker():
                 ch = bot.get_channel(channel_config["logs"])
                 if ch: target_channel = ch
 
-            await target_channel.send(embed=embed)
-            await asyncio.sleep(0.8) # 0.8s delay prevents Discord rate limits
+            # --- SEND MESSAGE WITH RATE LIMIT PROTECTION ---
+            try:
+                await target_channel.send(embed=embed)
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    # Discord said "Too Many Requests". Wait the exact time Discord asks for.
+                    wait_time = getattr(e, 'retry_after', 5.0)
+                    print(f"⚠️ Discord Rate Limit hit. Pausing for {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                    # Retry sending the message after waiting
+                    await target_channel.send(embed=embed)
+                else:
+                    print(f"Discord Send Error: {e}")
+
+            # --- SAFE DELAY ---
+            # 1.5 seconds is the perfect sweet spot to stay under Discord's 5-msg/5-sec limit
+            await asyncio.sleep(1.5) 
             
         except asyncio.CancelledError:
             break
-        except Exception:
-            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"Worker error: {e}")
+            await asyncio.sleep(2)
 
 # ==========================================
 # SLASH COMMANDS
@@ -226,7 +236,7 @@ async def on_close():
 # RUN BOT
 # ==========================================
 if __name__ == "__main__":
-    keep_alive() # Starts the invisible web server for Render Free Tier
+    keep_alive() 
     
     TOKEN = os.getenv("DISCORD_BOT_TOKEN")
     if not TOKEN:
